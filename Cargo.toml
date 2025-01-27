@@ -8,9 +8,9 @@ license = "MIT"
 keywords = ["rocket", "gzip", "brotli", "compression"]
 
 [dependencies]
-rocket = "0.5"
+rocket = { git = "https://github.com/rwf2/Rocket", branch = "master" }
 lazy_static = "1.4"
 futures = "0.3.17"
-log = "0.4"
+tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"] }
 
 async-compression = { version = "0.4", features = ["gzip", "brotli", "tokio"] }

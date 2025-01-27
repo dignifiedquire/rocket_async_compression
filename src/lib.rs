@@ -5,8 +5,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! #[macro_use]
-//! extern crate rocket;
+//! use rocket::{routes, launch};
 //!
 //! use rocket_async_compression::Compression;
 //!
@@ -29,9 +28,6 @@
 //! application vulnerable to attacks including BREACH. These risks should be
 //! evaluated in the context of your application before enabling compression.
 
-#[macro_use]
-extern crate log;
-
 mod fairing;
 mod responder;
 
@@ -42,11 +38,9 @@ pub use self::{
 
 pub use async_compression::Level;
 use fairing::CachedEncoding;
-use rocket::{
-    http::{hyper::header::CONTENT_ENCODING, MediaType},
-    response::Body,
-    Request, Response,
-};
+use rocket::{http::MediaType, response::Body, Request, Response};
+
+const CONTENT_ENCODING: &str = "content-encoding";
 
 pub enum Encoding {
     /// The `chunked` encoding.
@@ -112,7 +106,7 @@ impl CompressionUtils {
         encoding: Encoding,
     ) {
         response.set_header(::rocket::http::Header::new(
-            CONTENT_ENCODING.as_str(),
+            CONTENT_ENCODING,
             format!("{}", encoding),
         ));
         response.set_streamed_body(body);

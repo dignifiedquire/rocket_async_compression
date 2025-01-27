@@ -9,7 +9,9 @@ async fn rocket() -> _ {
     rocket::build()
         .mount(
             "/",
-            FileServer::from(relative!("examples/cached-compression/static")),
+            FileServer::new(relative!("examples/cached-compression/static")),
         )
-        .attach(CachedCompression::path_suffix_fairing(CachedCompression::static_paths(vec![".txt"])))
+        .attach(CachedCompression::path_suffix_fairing(
+            CachedCompression::static_paths(vec![".txt"]),
+        ))
 }

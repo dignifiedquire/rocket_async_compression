@@ -2,7 +2,7 @@ use async_compression::Level;
 use lazy_static::lazy_static;
 use rocket::{
     fairing::{Fairing, Info, Kind},
-    http::{hyper::header::CONTENT_ENCODING, Header, MediaType},
+    http::{Header, MediaType},
     tokio::{
         io::{AsyncRead, ReadBuf},
         sync::RwLock,
@@ -10,8 +10,9 @@ use rocket::{
     Request, Response,
 };
 use std::{collections::HashMap, io::Cursor, task::Poll};
+use tracing::{debug, error};
 
-use crate::{CompressionUtils, Encoding};
+use crate::{CompressionUtils, Encoding, CONTENT_ENCODING};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CachedEncoding {
@@ -305,10 +306,7 @@ impl Fairing for CachedCompression {
 
             if let Some(cached_body) = cached_body {
                 debug!("Found cached response for {}", path);
-                response.set_header(Header::new(
-                    CONTENT_ENCODING.as_str(),
-                    format!("{}", encoding),
-                ));
+                response.set_header(Header::new(CONTENT_ENCODING, format!("{}", encoding)));
                 response.set_sized_body(cached_body.len(), Cursor::new(cached_body));
                 return;
             }
@@ -329,10 +327,7 @@ impl Fairing for CachedCompression {
                 return;
             }
         };
-        response.set_header(Header::new(
-            CONTENT_ENCODING.as_str(),
-            format!("{}", encoding),
-        ));
+        response.set_header(Header::new(CONTENT_ENCODING, format!("{}", encoding)));
         response.set_sized_body(compressed_body.len(), Cursor::new(compressed_body.clone()));
 
         debug!("Setting cached response for {}", path);
