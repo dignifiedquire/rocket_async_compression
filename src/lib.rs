@@ -41,6 +41,7 @@ pub use self::{
 
 pub use async_compression::Level;
 use fairing::CachedEncoding;
+use http::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
 use rocket::{Request, Response, http::MediaType, response::Body};
 
 const CONTENT_ENCODING: &str = "content-encoding";
@@ -131,19 +132,69 @@ impl CompressionUtils {
         }
     }
 
-    /// Returns a tuple of the form (accepts_gzip, accepts_br).
-    fn accepted_algorithms(request: &Request<'_>) -> (bool, bool) {
-        request
-            .headers()
-            .get("Accept-Encoding")
-            .flat_map(|accept| accept.split(','))
-            .map(|accept| accept.trim())
-            .fold((false, false), |(accepts_gzip, accepts_br), encoding| {
-                (
-                    accepts_gzip || encoding == "gzip",
-                    accepts_br || encoding == "br",
-                )
-            })
+    /// Builds an http::HeaderMap from Rocket's request headers for use with fly-accept-encoding.
+    fn build_header_map(request: &Request<'_>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in request.headers().get("Accept-Encoding") {
+            if let Ok(header_value) = HeaderValue::from_str(value) {
+                headers.append(ACCEPT_ENCODING, header_value);
+            }
+        }
+        headers
+    }
+
+    /// Returns the preferred encoding based on q-values using fly-accept-encoding.
+    /// Returns None if identity is preferred or no compression is accepted.
+    /// Prefers brotli when q-values are equal.
+    fn preferred_encoding(request: &Request<'_>) -> Option<Encoding> {
+        let headers = Self::build_header_map(request);
+
+        let mut gzip_q: Option<f32> = None;
+        let mut br_q: Option<f32> = None;
+        let mut identity_q: Option<f32> = None;
+
+        for result in fly_accept_encoding::encodings_iter(&headers) {
+            if let Ok((Some(encoding), q)) = result {
+                match encoding {
+                    fly_accept_encoding::Encoding::Gzip => {
+                        gzip_q = Some(gzip_q.map_or(q, |existing| existing.max(q)));
+                    }
+                    fly_accept_encoding::Encoding::Brotli => {
+                        br_q = Some(br_q.map_or(q, |existing| existing.max(q)));
+                    }
+                    fly_accept_encoding::Encoding::Identity => {
+                        identity_q = Some(identity_q.map_or(q, |existing| existing.max(q)));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Find the best compression encoding
+        let best_compression = match (gzip_q, br_q) {
+            (None, None) => None,
+            (Some(g), None) => Some((Encoding::Gzip, g)),
+            (None, Some(b)) => Some((Encoding::Brotli, b)),
+            (Some(gzip), Some(br)) => {
+                // Prefer brotli when q-values are equal (better compression)
+                if br >= gzip {
+                    Some((Encoding::Brotli, br))
+                } else {
+                    Some((Encoding::Gzip, gzip))
+                }
+            }
+        };
+
+        // If identity is preferred over compression, return None
+        if let Some(identity) = identity_q {
+            match best_compression {
+                Some((enc, q)) if q > identity => Some(enc),
+                Some((enc, q)) if q == identity => Some(enc), // Prefer compression when equal
+                _ => None,
+            }
+        } else {
+            best_compression.map(|(enc, _)| enc)
+        }
     }
 
     async fn compress_body<'r>(
@@ -198,29 +249,29 @@ impl CompressionUtils {
             return;
         }
 
-        let (accepts_gzip, accepts_br) = Self::accepted_algorithms(request);
-
-        if !accepts_gzip && !accepts_br {
-            return;
-        }
+        let encoding = match Self::preferred_encoding(request) {
+            Some(enc) => enc,
+            None => return,
+        };
 
         let body = response.body_mut().take();
 
-        // Compression is done when the request accepts brotli or gzip encoding
-        if accepts_br {
-            let compressor = async_compression::tokio::bufread::BrotliEncoder::with_quality(
-                rocket::tokio::io::BufReader::new(body),
-                level,
-            );
-
-            CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Brotli);
-        } else if accepts_gzip {
-            let compressor = async_compression::tokio::bufread::GzipEncoder::with_quality(
-                rocket::tokio::io::BufReader::new(body),
-                level,
-            );
-
-            CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Gzip);
+        match encoding {
+            Encoding::Brotli => {
+                let compressor = async_compression::tokio::bufread::BrotliEncoder::with_quality(
+                    rocket::tokio::io::BufReader::new(body),
+                    level,
+                );
+                CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Brotli);
+            }
+            Encoding::Gzip => {
+                let compressor = async_compression::tokio::bufread::GzipEncoder::with_quality(
+                    rocket::tokio::io::BufReader::new(body),
+                    level,
+                );
+                CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Gzip);
+            }
+            _ => {}
         }
     }
 }

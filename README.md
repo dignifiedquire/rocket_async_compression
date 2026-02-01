@@ -14,6 +14,13 @@ rocket = "0.5"
 rocket_async_compression = "0.6"
 ```
 
+## Features
+
+- **Gzip and Brotli compression** with configurable compression levels
+- **Accept-Encoding q-value support**: Respects client preferences including quality values (e.g., `gzip;q=0.8, br;q=1.0`) and `identity` encoding
+- **Cached compression**: Optional in-memory caching for static files with LRU eviction
+- **Configurable limits**: Maximum body size, compression timeout, cache capacity, and TTL
+
 ## Usage
 
 The following example will enable compression only when the crate is built in release mode. Compression can be very slow when using unoptimized debug builds while developing locally.
@@ -79,3 +86,12 @@ CachedCompression::builder()
     .cached_path_suffixes(vec![".js".into()])
     .build()
 ```
+
+### Accept-Encoding Support
+
+The library fully supports the HTTP `Accept-Encoding` header with quality values:
+
+- Selects the encoding with the highest q-value (e.g., `gzip;q=0.5, br;q=1.0` uses Brotli)
+- Prefers Brotli when q-values are equal (better compression ratio)
+- Respects `identity` encoding - if `identity` has a higher q-value than compression algorithms, no compression is applied
+- Treats `q=0` as "not acceptable" for that encoding

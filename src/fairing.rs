@@ -402,8 +402,8 @@ impl Fairing for CachedCompression {
             return;
         }
 
-        let (accepts_gzip, accepts_br) = CompressionUtils::accepted_algorithms(request);
-        if !accepts_gzip && !accepts_br {
+        let preferred = CompressionUtils::preferred_encoding(request);
+        if preferred.is_none() {
             return;
         }
 
@@ -416,14 +416,12 @@ impl Fairing for CachedCompression {
             return;
         }
 
-        let desired_encoding = if accepts_br {
-            CachedEncoding::Brotli
-        } else {
-            CachedEncoding::Gzip
-        };
-        let encoding = match desired_encoding {
-            CachedEncoding::Gzip => Encoding::Gzip,
-            CachedEncoding::Brotli => Encoding::Brotli,
+        // preferred is guaranteed to be Some at this point due to earlier check
+        let encoding = preferred.unwrap();
+        let desired_encoding = match encoding {
+            Encoding::Brotli => CachedEncoding::Brotli,
+            Encoding::Gzip => CachedEncoding::Gzip,
+            _ => return, // Only gzip and brotli are supported
         };
 
         let cache_key = (path.clone(), desired_encoding);
