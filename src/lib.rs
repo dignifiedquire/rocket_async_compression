@@ -32,13 +32,16 @@ mod fairing;
 mod responder;
 
 pub use self::{
-    fairing::{CachedCompression, Compression},
+    fairing::{
+        CachedCompression, CachedCompressionBuilder, Compression, DEFAULT_CACHE_MAX_CAPACITY,
+        DEFAULT_CACHE_TTL,
+    },
     responder::Compress,
 };
 
 pub use async_compression::Level;
 use fairing::CachedEncoding;
-use rocket::{http::MediaType, response::Body, Request, Response};
+use rocket::{Request, Response, http::MediaType, response::Body};
 
 const CONTENT_ENCODING: &str = "content-encoding";
 

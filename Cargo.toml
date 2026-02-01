@@ -12,5 +12,5 @@ keywords = ["rocket", "gzip", "brotli", "compression"]
 rocket = { git = "https://github.com/rwf2/Rocket", branch = "master" }
 futures = "0.3.17"
 tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"] }
-
 async-compression = { version = "0.4", features = ["gzip", "brotli", "tokio"] }
+moka = { version = "0.12", features = ["sync"] }

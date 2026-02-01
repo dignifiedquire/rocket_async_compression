@@ -41,7 +41,9 @@ async fn rocket() -> _ {
 
 When serving static files, it can be useful to avoid the work of compressing the same files repeatedly for each request. This crate provides an alternative `CachedCompression` fairing which stores cached responses in memory and uses those when available.
 
-Note that cached responses do not expire and will be held in memory for the life of the program. You should only use this fairing for compressing static files that will not change while the server is running.
+The cache has configurable limits to prevent unbounded memory growth:
+- **Maximum capacity**: Default 1000 entries, with LRU eviction when exceeded
+- **Time-to-live**: Default 1 hour, after which entries are automatically removed
 
 ```rs
 #[macro_use]
@@ -57,6 +59,23 @@ async fn rocket() -> _ {
             "/",
             FileServer::from(relative!("static")),
         )
-        .attach(CachedCompression::path_suffix_fairing(vec![".js", ".css", ".html", ".wasm"]))
+        .attach(
+            CachedCompression::builder()
+                .cached_path_suffixes(vec![".js".into(), ".css".into(), ".html".into(), ".wasm".into()])
+                .build()
+        )
 }
+```
+
+With custom cache settings:
+
+```rs
+use std::time::Duration;
+use rocket_async_compression::CachedCompression;
+
+CachedCompression::builder()
+    .cache_max_capacity(500)           // Maximum 500 cached entries
+    .cache_ttl(Duration::from_secs(1800))  // 30 minute TTL
+    .cached_path_suffixes(vec![".js".into()])
+    .build()
 ```
