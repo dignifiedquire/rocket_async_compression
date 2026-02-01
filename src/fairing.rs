@@ -7,7 +7,7 @@ use rocket::{
     tokio::io::{AsyncRead, ReadBuf},
 };
 use std::{io::Cursor, sync::LazyLock, task::Poll, time::Duration};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{CONTENT_ENCODING, CompressionUtils, Encoding};
 
@@ -22,6 +22,11 @@ pub const DEFAULT_CACHE_MAX_CAPACITY: u64 = 1000;
 
 /// Default time-to-live for cached compressed responses (1 hour).
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+/// Default maximum body size for compression (50 MiB).
+///
+/// Bodies larger than this will not be compressed to prevent memory exhaustion.
+pub const DEFAULT_MAX_BODY_SIZE: u64 = 50 * 1024 * 1024;
 
 type CacheKey = (String, CachedEncoding);
 type CacheValue = Vec<u8>;
@@ -209,6 +214,7 @@ pub struct CachedCompression {
     cached_path_suffixes: Vec<String>,
     excluded_path_prefixes: Vec<String>,
     level: Option<Level>,
+    max_body_size: u64,
     cache: CompressionCache,
 }
 
@@ -224,6 +230,7 @@ pub struct CachedCompressionBuilder {
     cached_path_suffixes: Vec<String>,
     excluded_path_prefixes: Vec<String>,
     level: Option<Level>,
+    max_body_size: u64,
     cache_max_capacity: u64,
     cache_ttl: Duration,
 }
@@ -236,6 +243,7 @@ impl Default for CachedCompressionBuilder {
             cached_path_suffixes: Vec::new(),
             excluded_path_prefixes: Vec::new(),
             level: None,
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
             cache_max_capacity: DEFAULT_CACHE_MAX_CAPACITY,
             cache_ttl: DEFAULT_CACHE_TTL,
         }
@@ -291,6 +299,15 @@ impl CachedCompressionBuilder {
         self
     }
 
+    /// Sets the maximum body size that will be compressed.
+    ///
+    /// Bodies larger than this size will not be compressed to prevent memory exhaustion.
+    /// Default: 50 MiB (see [`DEFAULT_MAX_BODY_SIZE`]).
+    pub fn max_body_size(mut self, size: u64) -> Self {
+        self.max_body_size = size;
+        self
+    }
+
     /// Builds the [`CachedCompression`] fairing.
     ///
     /// This creates the cache with the configured capacity and TTL settings.
@@ -301,6 +318,7 @@ impl CachedCompressionBuilder {
             cached_path_suffixes: self.cached_path_suffixes,
             excluded_path_prefixes: self.excluded_path_prefixes,
             level: self.level,
+            max_body_size: self.max_body_size,
             cache: build_cache(self.cache_max_capacity, self.cache_ttl),
         }
     }
@@ -399,6 +417,17 @@ impl Fairing for CachedCompression {
             return;
         }
 
+        // Check body size before compression to prevent memory exhaustion
+        if let Some(size) = response.body().preset_size() {
+            if size > self.max_body_size as usize {
+                warn!(
+                    "Skipping compression for {}: body size {} exceeds max_body_size {}",
+                    path, size, self.max_body_size
+                );
+                return;
+            }
+        }
+
         let body = response.body_mut().take();
         let compressed_body: Vec<u8> = match CompressionUtils::compress_body(
             body,
@@ -417,8 +446,20 @@ impl Fairing for CachedCompression {
                 return;
             }
         };
+
         response.set_header(Header::new(CONTENT_ENCODING, format!("{}", encoding)));
         response.set_sized_body(compressed_body.len(), Cursor::new(compressed_body.clone()));
+
+        // Check compressed size to prevent caching excessively large responses
+        if compressed_body.len() as u64 > self.max_body_size {
+            warn!(
+                "Skipping cache for {}: compressed size {} exceeds max_body_size {}",
+                path,
+                compressed_body.len(),
+                self.max_body_size
+            );
+            return;
+        }
 
         debug!("Setting cached response for {}", path);
         self.cache.insert(cache_key, compressed_body);
@@ -433,10 +474,12 @@ mod tests {
     fn test_cached_compression_builder_cache_settings() {
         let builder = CachedCompression::builder()
             .cache_max_capacity(500)
-            .cache_ttl(Duration::from_secs(1800));
+            .cache_ttl(Duration::from_secs(1800))
+            .max_body_size(10 * 1024 * 1024);
 
         assert_eq!(builder.cache_max_capacity, 500);
         assert_eq!(builder.cache_ttl, Duration::from_secs(1800));
+        assert_eq!(builder.max_body_size, 10 * 1024 * 1024);
     }
 
     #[test]
