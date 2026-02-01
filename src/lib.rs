@@ -34,7 +34,7 @@ mod responder;
 pub use self::{
     fairing::{
         CachedCompression, CachedCompressionBuilder, Compression, DEFAULT_CACHE_MAX_CAPACITY,
-        DEFAULT_CACHE_TTL, DEFAULT_MAX_BODY_SIZE,
+        DEFAULT_CACHE_TTL, DEFAULT_COMPRESSION_TIMEOUT, DEFAULT_MAX_BODY_SIZE,
     },
     responder::Compress,
 };

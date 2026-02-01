@@ -28,6 +28,11 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(3600);
 /// Bodies larger than this will not be compressed to prevent memory exhaustion.
 pub const DEFAULT_MAX_BODY_SIZE: u64 = 50 * 1024 * 1024;
 
+/// Default compression timeout (30 seconds).
+///
+/// Compression operations taking longer than this will be aborted.
+pub const DEFAULT_COMPRESSION_TIMEOUT: Duration = Duration::from_secs(30);
+
 type CacheKey = (String, CachedEncoding);
 type CacheValue = Vec<u8>;
 type CompressionCache = Cache<CacheKey, CacheValue>;
@@ -215,6 +220,7 @@ pub struct CachedCompression {
     excluded_path_prefixes: Vec<String>,
     level: Option<Level>,
     max_body_size: u64,
+    compression_timeout: Duration,
     cache: CompressionCache,
 }
 
@@ -231,6 +237,7 @@ pub struct CachedCompressionBuilder {
     excluded_path_prefixes: Vec<String>,
     level: Option<Level>,
     max_body_size: u64,
+    compression_timeout: Duration,
     cache_max_capacity: u64,
     cache_ttl: Duration,
 }
@@ -244,6 +251,7 @@ impl Default for CachedCompressionBuilder {
             excluded_path_prefixes: Vec::new(),
             level: None,
             max_body_size: DEFAULT_MAX_BODY_SIZE,
+            compression_timeout: DEFAULT_COMPRESSION_TIMEOUT,
             cache_max_capacity: DEFAULT_CACHE_MAX_CAPACITY,
             cache_ttl: DEFAULT_CACHE_TTL,
         }
@@ -308,6 +316,15 @@ impl CachedCompressionBuilder {
         self
     }
 
+    /// Sets the compression timeout.
+    ///
+    /// Compression operations taking longer than this will be aborted.
+    /// Default: 30 seconds (see [`DEFAULT_COMPRESSION_TIMEOUT`]).
+    pub fn compression_timeout(mut self, timeout: Duration) -> Self {
+        self.compression_timeout = timeout;
+        self
+    }
+
     /// Builds the [`CachedCompression`] fairing.
     ///
     /// This creates the cache with the configured capacity and TTL settings.
@@ -319,6 +336,7 @@ impl CachedCompressionBuilder {
             excluded_path_prefixes: self.excluded_path_prefixes,
             level: self.level,
             max_body_size: self.max_body_size,
+            compression_timeout: self.compression_timeout,
             cache: build_cache(self.cache_max_capacity, self.cache_ttl),
         }
     }
@@ -429,20 +447,36 @@ impl Fairing for CachedCompression {
         }
 
         let body = response.body_mut().take();
-        let compressed_body: Vec<u8> = match CompressionUtils::compress_body(
+        let compression_future = CompressionUtils::compress_body(
             body,
             desired_encoding,
             self.level.unwrap_or(Level::Default),
+        );
+
+        let compressed_body: Vec<u8> = match rocket::tokio::time::timeout(
+            self.compression_timeout,
+            compression_future,
         )
         .await
         {
-            Ok(compressed_body) => compressed_body,
-            Err(err) => {
+            Ok(Ok(compressed_body)) => compressed_body,
+            Ok(Err(err)) => {
                 error!(
                     "Failed to compress response body for {}; underlying `AsyncRead` likely failed: {}",
                     path, err
                 );
                 response.set_streamed_body(ErrorBody(Some(err)));
+                return;
+            }
+            Err(_) => {
+                error!(
+                    "Compression timeout for {}: exceeded {:?}",
+                    path, self.compression_timeout
+                );
+                response.set_streamed_body(ErrorBody(Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "compression timeout",
+                ))));
                 return;
             }
         };
@@ -478,11 +512,13 @@ mod tests {
         let builder = CachedCompression::builder()
             .cache_max_capacity(500)
             .cache_ttl(Duration::from_secs(1800))
-            .max_body_size(10 * 1024 * 1024);
+            .max_body_size(10 * 1024 * 1024)
+            .compression_timeout(Duration::from_secs(60));
 
         assert_eq!(builder.cache_max_capacity, 500);
         assert_eq!(builder.cache_ttl, Duration::from_secs(1800));
         assert_eq!(builder.max_body_size, 10 * 1024 * 1024);
+        assert_eq!(builder.compression_timeout, Duration::from_secs(60));
     }
 
     #[test]
