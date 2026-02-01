@@ -1,5 +1,4 @@
 use async_compression::Level;
-use lazy_static::lazy_static;
 use rocket::{
     fairing::{Fairing, Info, Kind},
     http::{Header, MediaType},
@@ -9,7 +8,7 @@ use rocket::{
     },
     Request, Response,
 };
-use std::{collections::HashMap, io::Cursor, task::Poll};
+use std::{collections::HashMap, io::Cursor, sync::LazyLock, task::Poll};
 use tracing::{debug, error};
 
 use crate::{CompressionUtils, Encoding, CONTENT_ENCODING};
@@ -20,20 +19,19 @@ pub(crate) enum CachedEncoding {
     Brotli,
 }
 
-lazy_static! {
-    static ref EXCLUSIONS: Vec<MediaType> = vec![
+static EXCLUSIONS: LazyLock<Vec<MediaType>> = LazyLock::new(|| {
+    vec![
         MediaType::parse_flexible("application/gzip").unwrap(),
         MediaType::parse_flexible("application/zip").unwrap(),
         MediaType::parse_flexible("image/*").unwrap(),
         MediaType::parse_flexible("video/*").unwrap(),
         MediaType::parse_flexible("application/octet-stream").unwrap(),
         MediaType::parse_flexible("text/event-stream").unwrap(),
-    ];
-    static ref CACHED_FILES: RwLock<HashMap<(String, CachedEncoding), &'static [u8]>> = {
-        let m = HashMap::new();
-        RwLock::new(m)
-    };
-}
+    ]
+});
+
+static CACHED_FILES: LazyLock<RwLock<HashMap<(String, CachedEncoding), &'static [u8]>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Compresses all responses with Brotli or Gzip compression.
 ///
