@@ -448,21 +448,24 @@ impl Fairing for CachedCompression {
         };
 
         response.set_header(Header::new(CONTENT_ENCODING, format!("{}", encoding)));
-        response.set_sized_body(compressed_body.len(), Cursor::new(compressed_body.clone()));
 
         // Check compressed size to prevent caching excessively large responses
-        if compressed_body.len() as u64 > self.max_body_size {
+        let should_cache = compressed_body.len() as u64 <= self.max_body_size;
+        if !should_cache {
             warn!(
                 "Skipping cache for {}: compressed size {} exceeds max_body_size {}",
                 path,
                 compressed_body.len(),
                 self.max_body_size
             );
-            return;
         }
 
-        debug!("Setting cached response for {}", path);
-        self.cache.insert(cache_key, compressed_body);
+        let len = compressed_body.len();
+        if should_cache {
+            debug!("Setting cached response for {}", path);
+            self.cache.insert(cache_key, compressed_body.clone());
+        }
+        response.set_sized_body(len, Cursor::new(compressed_body));
     }
 }
 
