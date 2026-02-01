@@ -16,3 +16,4 @@ async-compression = { version = "0.4", features = ["gzip", "brotli", "deflate", 
 moka = { version = "0.12", features = ["future"] }
 fly-accept-encoding = "0.3"
 http = "1"
+bytes = "1"

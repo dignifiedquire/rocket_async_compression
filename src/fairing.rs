@@ -1,4 +1,5 @@
 use async_compression::Level;
+use bytes::Bytes;
 use moka::future::Cache;
 use rocket::{
     Request, Response,
@@ -36,7 +37,7 @@ pub const DEFAULT_MAX_BODY_SIZE: u64 = 50 * 1024 * 1024;
 pub const DEFAULT_COMPRESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
 type CacheKey = (String, CachedEncoding);
-type CacheValue = Vec<u8>;
+type CacheValue = Bytes;
 type CompressionCache = Cache<CacheKey, CacheValue>;
 
 static EXCLUSIONS: LazyLock<Vec<MediaType>> = LazyLock::new(|| {
@@ -455,7 +456,7 @@ impl Fairing for CachedCompression {
             self.level.unwrap_or(Level::Default),
         );
 
-        let compressed_body: Vec<u8> = match rocket::tokio::time::timeout(
+        let compressed_body = match rocket::tokio::time::timeout(
             self.compression_timeout,
             compression_future,
         )
