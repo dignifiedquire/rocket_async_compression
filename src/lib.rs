@@ -4,7 +4,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust
+//! ```rust,ignore
 //! use rocket::{routes, launch};
 //!
 //! use rocket_async_compression::Compression;

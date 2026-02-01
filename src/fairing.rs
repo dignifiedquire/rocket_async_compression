@@ -1,23 +1,25 @@
 use async_compression::Level;
 use rocket::{
+    Request, Response,
     fairing::{Fairing, Info, Kind},
     http::{Header, MediaType},
     tokio::{
         io::{AsyncRead, ReadBuf},
         sync::RwLock,
     },
-    Request, Response,
 };
 use std::{collections::HashMap, io::Cursor, sync::LazyLock, task::Poll};
 use tracing::{debug, error};
 
-use crate::{CompressionUtils, Encoding, CONTENT_ENCODING};
+use crate::{CONTENT_ENCODING, CompressionUtils, Encoding};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CachedEncoding {
     Gzip,
     Brotli,
 }
+
+type CachedFilesMap = RwLock<HashMap<(String, CachedEncoding), &'static [u8]>>;
 
 static EXCLUSIONS: LazyLock<Vec<MediaType>> = LazyLock::new(|| {
     vec![
@@ -30,8 +32,7 @@ static EXCLUSIONS: LazyLock<Vec<MediaType>> = LazyLock::new(|| {
     ]
 });
 
-static CACHED_FILES: LazyLock<RwLock<HashMap<(String, CachedEncoding), &'static [u8]>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+static CACHED_FILES: LazyLock<CachedFilesMap> = LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Compresses all responses with Brotli or Gzip compression.
 ///
@@ -81,7 +82,7 @@ impl Compression {
     ///
     /// rocket::build()
     ///     // ...
-    ///     .attach(Compression::fairing())
+    ///     .attach(Compression::fairing());
     ///     // ...
     /// ```
     pub fn fairing() -> Compression {
@@ -98,7 +99,7 @@ impl Compression {
     ///
     /// rocket::build()
     ///    // ...
-    ///    .attach(Compression::with_level(Level::Fastest))
+    ///    .attach(Compression::with_level(Level::Fastest));
     ///    // ...
     /// ```
     pub fn with_level(level: Level) -> Compression {
@@ -172,7 +173,7 @@ impl Fairing for Compression {
 ///         cached_path_prefixes: vec!["/user/".to_owned(), "/g/".to_owned(), "/p/".to_owned()],
 ///         cached_path_suffixes: vec![".otf".to_owned(), "main.dart.js".to_owned()],
 ///         ..Default::default()
-///     })
+///     });
 ///     // ...
 /// ```
 ///
@@ -238,7 +239,7 @@ impl AsyncRead for ErrorBody {
     ) -> Poll<Result<(), std::io::Error>> {
         let err = match self.0.take() {
             Some(err) => err,
-            None => std::io::Error::new(std::io::ErrorKind::Other, "ErrorBody already read"),
+            None => std::io::Error::other("ErrorBody already read"),
         };
         Poll::Ready(Err(err))
     }
@@ -320,7 +321,10 @@ impl Fairing for CachedCompression {
         {
             Ok(compressed_body) => compressed_body,
             Err(err) => {
-                error!("Failed to compress response body for {}; underlying `AsyncRead` likely failed: {}", path, err);
+                error!(
+                    "Failed to compress response body for {}; underlying `AsyncRead` likely failed: {}",
+                    path, err
+                );
                 response.set_streamed_body(ErrorBody(Some(err)));
                 return;
             }
