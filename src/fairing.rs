@@ -15,6 +15,8 @@ use crate::{CONTENT_ENCODING, CompressionUtils, Encoding};
 pub(crate) enum CachedEncoding {
     Gzip,
     Brotli,
+    Deflate,
+    Zstd,
 }
 
 /// Default maximum number of cached compressed responses (1000 entries).
@@ -419,9 +421,11 @@ impl Fairing for CachedCompression {
         // preferred is guaranteed to be Some at this point due to earlier check
         let encoding = preferred.unwrap();
         let desired_encoding = match encoding {
+            Encoding::Zstd => CachedEncoding::Zstd,
             Encoding::Brotli => CachedEncoding::Brotli,
             Encoding::Gzip => CachedEncoding::Gzip,
-            _ => return, // Only gzip and brotli are supported
+            Encoding::Deflate => CachedEncoding::Deflate,
+            _ => return,
         };
 
         let cache_key = (path.clone(), desired_encoding);

@@ -65,6 +65,70 @@ fn test_brotli_compression() {
 }
 
 #[test]
+fn test_deflate_compression() {
+    let client = Client::tracked(rocket_with_compression()).unwrap();
+    let response = client
+        .get("/hello.txt")
+        .header(Header::new("Accept-Encoding", "deflate"))
+        .dispatch();
+
+    assert_eq!(response.status(), Status::Ok);
+    assert_eq!(
+        response.headers().get_one("Content-Encoding"),
+        Some("deflate")
+    );
+
+    let body = response.into_bytes().unwrap();
+    assert!(
+        body.len() < TEST_CONTENT.len(),
+        "compressed size {} should be smaller than original {}",
+        body.len(),
+        TEST_CONTENT.len()
+    );
+}
+
+#[test]
+fn test_zstd_compression() {
+    let client = Client::tracked(rocket_with_compression()).unwrap();
+    let response = client
+        .get("/hello.txt")
+        .header(Header::new("Accept-Encoding", "zstd"))
+        .dispatch();
+
+    assert_eq!(response.status(), Status::Ok);
+    assert_eq!(response.headers().get_one("Content-Encoding"), Some("zstd"));
+
+    let body = response.into_bytes().unwrap();
+    assert!(
+        body.len() < TEST_CONTENT.len(),
+        "compressed size {} should be smaller than original {}",
+        body.len(),
+        TEST_CONTENT.len()
+    );
+}
+
+#[test]
+fn test_zstd_preferred_over_all() {
+    let client = Client::tracked(rocket_with_compression()).unwrap();
+    let response = client
+        .get("/hello.txt")
+        .header(Header::new("Accept-Encoding", "gzip, br, deflate, zstd"))
+        .dispatch();
+
+    assert_eq!(response.status(), Status::Ok);
+    // Zstd should be preferred when all are accepted
+    assert_eq!(response.headers().get_one("Content-Encoding"), Some("zstd"));
+
+    let body = response.into_bytes().unwrap();
+    assert!(
+        body.len() < TEST_CONTENT.len(),
+        "compressed size {} should be smaller than original {}",
+        body.len(),
+        TEST_CONTENT.len()
+    );
+}
+
+#[test]
 fn test_brotli_preferred_over_gzip() {
     let client = Client::tracked(rocket_with_compression()).unwrap();
     let response = client
@@ -179,9 +243,10 @@ fn test_compression_preferred_over_identity() {
 #[test]
 fn test_no_compression_for_unsupported_encoding() {
     let client = Client::tracked(rocket_with_compression()).unwrap();
+    // "compress" (LZW) is not a supported encoding
     let response = client
         .get("/hello.txt")
-        .header(Header::new("Accept-Encoding", "deflate"))
+        .header(Header::new("Accept-Encoding", "compress"))
         .dispatch();
 
     assert_eq!(response.status(), Status::Ok);

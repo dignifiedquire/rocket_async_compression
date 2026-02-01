@@ -1,4 +1,4 @@
-//! Gzip and Brotli response compression for Rocket
+//! Response compression for Rocket supporting Gzip, Brotli, Deflate, and Zstd
 //!
 //! See the [`Compression`] and [`Compress`] types for further details.
 //!
@@ -46,6 +46,7 @@ use rocket::{Request, Response, http::MediaType, response::Body};
 
 const CONTENT_ENCODING: &str = "content-encoding";
 
+#[derive(Clone)]
 pub enum Encoding {
     /// The `chunked` encoding.
     Chunked,
@@ -55,6 +56,8 @@ pub enum Encoding {
     Gzip,
     /// The `deflate` encoding.
     Deflate,
+    /// The `zstd` encoding.
+    Zstd,
     /// The `compress` encoding.
     Compress,
     /// The `identity` encoding.
@@ -72,6 +75,7 @@ impl std::fmt::Display for Encoding {
             Encoding::Brotli => "br",
             Encoding::Gzip => "gzip",
             Encoding::Deflate => "deflate",
+            Encoding::Zstd => "zstd",
             Encoding::Compress => "compress",
             Encoding::Identity => "identity",
             Encoding::Trailers => "trailers",
@@ -89,6 +93,7 @@ impl std::str::FromStr for Encoding {
             "br" => Ok(Encoding::Brotli),
             "deflate" => Ok(Encoding::Deflate),
             "gzip" => Ok(Encoding::Gzip),
+            "zstd" => Ok(Encoding::Zstd),
             "compress" => Ok(Encoding::Compress),
             "identity" => Ok(Encoding::Identity),
             "trailers" => Ok(Encoding::Trailers),
@@ -145,12 +150,14 @@ impl CompressionUtils {
 
     /// Returns the preferred encoding based on q-values using fly-accept-encoding.
     /// Returns None if identity is preferred or no compression is accepted.
-    /// Prefers brotli when q-values are equal.
+    /// Priority when q-values are equal: zstd > brotli > gzip > deflate (by compression ratio).
     fn preferred_encoding(request: &Request<'_>) -> Option<Encoding> {
         let headers = Self::build_header_map(request);
 
         let mut gzip_q: Option<f32> = None;
         let mut br_q: Option<f32> = None;
+        let mut deflate_q: Option<f32> = None;
+        let mut zstd_q: Option<f32> = None;
         let mut identity_q: Option<f32> = None;
 
         for result in fly_accept_encoding::encodings_iter(&headers) {
@@ -162,28 +169,43 @@ impl CompressionUtils {
                     fly_accept_encoding::Encoding::Brotli => {
                         br_q = Some(br_q.map_or(q, |existing| existing.max(q)));
                     }
+                    fly_accept_encoding::Encoding::Deflate => {
+                        deflate_q = Some(deflate_q.map_or(q, |existing| existing.max(q)));
+                    }
+                    fly_accept_encoding::Encoding::Zstd => {
+                        zstd_q = Some(zstd_q.map_or(q, |existing| existing.max(q)));
+                    }
                     fly_accept_encoding::Encoding::Identity => {
                         identity_q = Some(identity_q.map_or(q, |existing| existing.max(q)));
                     }
-                    _ => {}
                 }
             }
         }
 
-        // Find the best compression encoding
-        let best_compression = match (gzip_q, br_q) {
-            (None, None) => None,
-            (Some(g), None) => Some((Encoding::Gzip, g)),
-            (None, Some(b)) => Some((Encoding::Brotli, b)),
-            (Some(gzip), Some(br)) => {
-                // Prefer brotli when q-values are equal (better compression)
-                if br >= gzip {
-                    Some((Encoding::Brotli, br))
-                } else {
-                    Some((Encoding::Gzip, gzip))
-                }
-            }
-        };
+        // Collect all supported encodings with their q-values
+        // Priority when equal: zstd > brotli > gzip > deflate
+        let mut candidates: Vec<(Encoding, f32, u8)> = Vec::new();
+        if let Some(q) = zstd_q {
+            candidates.push((Encoding::Zstd, q, 0)); // highest priority
+        }
+        if let Some(q) = br_q {
+            candidates.push((Encoding::Brotli, q, 1));
+        }
+        if let Some(q) = gzip_q {
+            candidates.push((Encoding::Gzip, q, 2));
+        }
+        if let Some(q) = deflate_q {
+            candidates.push((Encoding::Deflate, q, 3)); // lowest priority
+        }
+
+        // Sort by q-value descending, then by priority ascending
+        candidates.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        let best_compression = candidates.first().map(|(enc, q, _)| (enc.clone(), *q));
 
         // If identity is preferred over compression, return None
         if let Some(identity) = identity_q {
@@ -203,10 +225,18 @@ impl CompressionUtils {
         level: async_compression::Level,
     ) -> std::io::Result<Vec<u8>> {
         match encoding {
+            CachedEncoding::Zstd => {
+                let mut compressor = async_compression::tokio::bufread::ZstdEncoder::with_quality(
+                    rocket::tokio::io::BufReader::new(body),
+                    level,
+                );
+                let mut out = Vec::new();
+                rocket::tokio::io::copy(&mut compressor, &mut out).await?;
+                Ok(out)
+            }
             CachedEncoding::Brotli => {
-                // The broli library used internally by `async-compression` has a default compression level of "best", or 11.  This
-                // is unsuitable for dynamic data and makes compression extremely slow.
-                //
+                // The brotli library used internally by `async-compression` has a default compression level of "best", or 11.
+                // This is unsuitable for dynamic data and makes compression extremely slow.
                 // We set a compression level of 4 if the user requests default which matches the behavior of Nginx.
                 let level = match level {
                     async_compression::Level::Default => async_compression::Level::Precise(4),
@@ -226,6 +256,16 @@ impl CompressionUtils {
                     rocket::tokio::io::BufReader::new(body),
                     level,
                 );
+                let mut out = Vec::new();
+                rocket::tokio::io::copy(&mut compressor, &mut out).await?;
+                Ok(out)
+            }
+            CachedEncoding::Deflate => {
+                let mut compressor =
+                    async_compression::tokio::bufread::DeflateEncoder::with_quality(
+                        rocket::tokio::io::BufReader::new(body),
+                        level,
+                    );
                 let mut out = Vec::new();
                 rocket::tokio::io::copy(&mut compressor, &mut out).await?;
                 Ok(out)
@@ -257,6 +297,13 @@ impl CompressionUtils {
         let body = response.body_mut().take();
 
         match encoding {
+            Encoding::Zstd => {
+                let compressor = async_compression::tokio::bufread::ZstdEncoder::with_quality(
+                    rocket::tokio::io::BufReader::new(body),
+                    level,
+                );
+                CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Zstd);
+            }
             Encoding::Brotli => {
                 let compressor = async_compression::tokio::bufread::BrotliEncoder::with_quality(
                     rocket::tokio::io::BufReader::new(body),
@@ -271,7 +318,19 @@ impl CompressionUtils {
                 );
                 CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Gzip);
             }
-            _ => {}
+            Encoding::Deflate => {
+                let compressor = async_compression::tokio::bufread::DeflateEncoder::with_quality(
+                    rocket::tokio::io::BufReader::new(body),
+                    level,
+                );
+                CompressionUtils::set_body_and_encoding(response, compressor, Encoding::Deflate);
+            }
+            // These encodings are not compression algorithms we support
+            Encoding::Chunked
+            | Encoding::Compress
+            | Encoding::Identity
+            | Encoding::Trailers
+            | Encoding::EncodingExt(_) => {}
         }
     }
 }

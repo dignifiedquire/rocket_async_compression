@@ -16,7 +16,7 @@ rocket_async_compression = "0.6"
 
 ## Features
 
-- **Gzip and Brotli compression** with configurable compression levels
+- **Multiple compression algorithms**: Gzip, Brotli, Deflate, and Zstd with configurable compression levels
 - **Accept-Encoding q-value support**: Respects client preferences including quality values (e.g., `gzip;q=0.8, br;q=1.0`) and `identity` encoding
 - **Cached compression**: Optional in-memory caching for static files with LRU eviction
 - **Configurable limits**: Maximum body size, compression timeout, cache capacity, and TTL
@@ -92,6 +92,15 @@ CachedCompression::builder()
 The library fully supports the HTTP `Accept-Encoding` header with quality values:
 
 - Selects the encoding with the highest q-value (e.g., `gzip;q=0.5, br;q=1.0` uses Brotli)
-- Prefers Brotli when q-values are equal (better compression ratio)
+- Priority when q-values are equal: zstd > brotli > gzip > deflate (by compression efficiency)
 - Respects `identity` encoding - if `identity` has a higher q-value than compression algorithms, no compression is applied
 - Treats `q=0` as "not acceptable" for that encoding
+
+### Supported Algorithms
+
+| Algorithm | Content-Encoding | Notes |
+|-----------|------------------|-------|
+| Zstd | `zstd` | Best compression ratio and speed |
+| Brotli | `br` | Excellent compression, widely supported |
+| Gzip | `gzip` | Universal browser support |
+| Deflate | `deflate` | Legacy support |
