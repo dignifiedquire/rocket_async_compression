@@ -1,5 +1,5 @@
 use async_compression::Level;
-use moka::sync::Cache;
+use moka::future::Cache;
 use rocket::{
     Request, Response,
     fairing::{Fairing, Info, Kind},
@@ -410,7 +410,7 @@ impl Fairing for CachedCompression {
 
         let cache_key = (path.clone(), desired_encoding);
 
-        if let Some(cached_body) = self.cache.get(&cache_key) {
+        if let Some(cached_body) = self.cache.get(&cache_key).await {
             debug!("Found cached response for {}", path);
             response.set_header(Header::new(CONTENT_ENCODING, format!("{}", encoding)));
             response.set_sized_body(cached_body.len(), Cursor::new(cached_body));
@@ -463,7 +463,7 @@ impl Fairing for CachedCompression {
         let len = compressed_body.len();
         if should_cache {
             debug!("Setting cached response for {}", path);
-            self.cache.insert(cache_key, compressed_body.clone());
+            self.cache.insert(cache_key, compressed_body.clone()).await;
         }
         response.set_sized_body(len, Cursor::new(compressed_body));
     }
